@@ -106,4 +106,3 @@ func (c *sqliteConn) QueryStream(ctx context.Context, sqlStr string, opts driver
 func (c *sqliteConn) Close() error {
 	return c.db.Close()
 }
-

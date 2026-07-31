@@ -154,4 +154,3 @@ func (c *snowflakeConn) Query(ctx context.Context, sqlStr string, opts driver.Qu
 		Rows:    rows,
 	}, nil
 }
-
