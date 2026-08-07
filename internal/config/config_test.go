@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -434,6 +436,48 @@ func TestEffectivePort(t *testing.T) {
 				t.Errorf("EffectivePort() = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestConcurrentStoreConnectionDoesNotLoseEntries is the regression test for
+// the lost-update race: StoreConnection used to Read() the whole config
+// (from cache or disk), mutate the in-memory copy, and Write() it back with
+// no lock, so two concurrent CLI invocations each built their write from a
+// snapshot taken before the other's landed and the loser's connection
+// silently vanished.
+func TestConcurrentStoreConnectionDoesNotLoseEntries(t *testing.T) {
+	setup(t)
+
+	const writers = 20
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			alias := fmt.Sprintf("conn-%02d", i)
+			conn := Connection{Driver: "pg", Host: fmt.Sprintf("host-%02d", i), Database: "d"}
+			if err := StoreConnection(alias, conn); err != nil {
+				t.Errorf("StoreConnection(%s): %v", alias, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	ClearCache()
+	cfg := Read()
+	if len(cfg.Connections) != writers {
+		t.Fatalf("Connections len = %d, want %d — concurrent writers lost entries", len(cfg.Connections), writers)
+	}
+	for i := range writers {
+		alias := fmt.Sprintf("conn-%02d", i)
+		conn, ok := cfg.Connections[alias]
+		if !ok {
+			t.Errorf("%s was lost from the config", alias)
+			continue
+		}
+		if conn.Host != fmt.Sprintf("host-%02d", i) {
+			t.Errorf("%s round-tripped as %q", alias, conn.Host)
+		}
 	}
 }
 

@@ -1,8 +1,10 @@
 package credential
 
 import (
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shhac/agent-sql/internal/config"
@@ -185,6 +187,51 @@ func TestList(t *testing.T) {
 	}
 	if !found["cred-a"] || !found["cred-b"] {
 		t.Errorf("List() = %v, want [cred-a cred-b]", names)
+	}
+}
+
+// TestConcurrentStoresDoNotLoseEntries is the regression test for the
+// lost-update race: Store used to Read the whole index, mutate its in-memory
+// copy, and os.WriteFile it back with no lock, so two concurrent writers each
+// built their write from a snapshot taken before the other landed and the
+// loser's entry vanished. Forcing the keychain opt-out routes every writer
+// down the file-backed path deterministically, so this exercises the real
+// index file rather than a keychain double.
+func TestConcurrentStoresDoNotLoseEntries(t *testing.T) {
+	t.Setenv("AGENT_SQL_NO_KEYCHAIN", "1")
+	config.SetConfigDir(t.TempDir())
+	t.Cleanup(func() { config.SetConfigDir("") })
+
+	const writers = 20
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("conn-%02d", i)
+			cred := Credential{Username: fmt.Sprintf("user-%02d", i), Password: fmt.Sprintf("pass-%02d", i)}
+			if _, err := Store(name, cred); err != nil {
+				t.Errorf("Store(%s): %v", name, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	names := List()
+	if len(names) != writers {
+		t.Fatalf("List() len = %d, want %d — concurrent writers lost entries", len(names), writers)
+	}
+
+	for i := range writers {
+		name := fmt.Sprintf("conn-%02d", i)
+		got := Get(name)
+		if got == nil {
+			t.Errorf("%s was lost from the index", name)
+			continue
+		}
+		if got.Username != fmt.Sprintf("user-%02d", i) {
+			t.Errorf("%s round-tripped as %q", name, got.Username)
+		}
 	}
 }
 

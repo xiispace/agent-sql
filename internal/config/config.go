@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/shhac/lib-agent-cli/creds"
 	"github.com/shhac/lib-agent-cli/xdg"
 )
 
@@ -90,6 +91,16 @@ func configPath() string {
 	return filepath.Join(ConfigDir(), "config.json")
 }
 
+// store is the shared config file: 0600 writes into a 0700 parent, atomic
+// replacement, and Update for a locked read-modify-write. Every StoreX/
+// RemoveX/SetDefault/UpdateSetting mutator used to Read() then Write() as two
+// separate steps, which raced across processes: two concurrent CLI
+// invocations could each build their write from a snapshot taken before the
+// other landed, and the loser's change was silently erased.
+func store() creds.Store {
+	return creds.Store{Path: configPath()}
+}
+
 // ClearCache forces a re-read on next access.
 func ClearCache() {
 	cacheMu.Lock()
@@ -121,22 +132,40 @@ func Read() *Config {
 	return cache
 }
 
-// Write saves the configuration to disk.
+// Write saves the configuration to disk. It performs a plain save, not a
+// read-modify-write — callers that need to mutate the existing config should
+// go through update (via StoreConnection, RemoveConnection, SetDefault,
+// UpdateSetting, or ResetSettings) instead of calling Read then Write
+// directly, which reintroduces the lost-update race update exists to close.
 func Write(cfg *Config) error {
 	cacheMu.Lock()
 	cache = nil
 	cacheMu.Unlock()
 
-	dir := ConfigDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
+	return store().Save(cfg)
+}
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "config.json"), append(data, '\n'), 0o644)
+// update runs a read-modify-write of the config file under one exclusive
+// lock, so two concurrent CLI invocations serialize instead of each building
+// its write from a snapshot taken before the other's landed. It reads FRESH
+// state straight from disk — deliberately bypassing the in-memory cache,
+// which may be empty or stale in this process — and invalidates the cache
+// afterward so the next Read() picks up the write instead of serving what
+// was cached before the lock was taken.
+func update(mutate func(cfg *Config) error) error {
+	cfg := defaultConfig()
+	err := store().Update(cfg, func() error {
+		if cfg.Connections == nil {
+			cfg.Connections = make(map[string]Connection)
+		}
+		return mutate(cfg)
+	})
+
+	cacheMu.Lock()
+	cache = nil
+	cacheMu.Unlock()
+
+	return err
 }
 
 // GetConnection returns a connection by alias, or nil if not found.
@@ -161,39 +190,42 @@ func GetDefaultAlias() string {
 
 // StoreConnection saves a connection. First connection becomes the default.
 func StoreConnection(alias string, conn Connection) error {
-	cfg := Read()
-	cfg.Connections[alias] = conn
-	if cfg.DefaultConnection == "" {
-		cfg.DefaultConnection = alias
-	}
-	return Write(cfg)
+	return update(func(cfg *Config) error {
+		cfg.Connections[alias] = conn
+		if cfg.DefaultConnection == "" {
+			cfg.DefaultConnection = alias
+		}
+		return nil
+	})
 }
 
 // RemoveConnection removes a connection by alias.
 func RemoveConnection(alias string) error {
-	cfg := Read()
-	if _, ok := cfg.Connections[alias]; !ok {
-		return &ConnectionNotFoundError{Alias: alias, Available: connectionAliases(cfg)}
-	}
-	delete(cfg.Connections, alias)
-	if cfg.DefaultConnection == alias {
-		cfg.DefaultConnection = ""
-		for k := range cfg.Connections {
-			cfg.DefaultConnection = k
-			break
+	return update(func(cfg *Config) error {
+		if _, ok := cfg.Connections[alias]; !ok {
+			return &ConnectionNotFoundError{Alias: alias, Available: connectionAliases(cfg)}
 		}
-	}
-	return Write(cfg)
+		delete(cfg.Connections, alias)
+		if cfg.DefaultConnection == alias {
+			cfg.DefaultConnection = ""
+			for k := range cfg.Connections {
+				cfg.DefaultConnection = k
+				break
+			}
+		}
+		return nil
+	})
 }
 
 // SetDefault sets the default connection alias.
 func SetDefault(alias string) error {
-	cfg := Read()
-	if _, ok := cfg.Connections[alias]; !ok {
-		return &ConnectionNotFoundError{Alias: alias, Available: connectionAliases(cfg)}
-	}
-	cfg.DefaultConnection = alias
-	return Write(cfg)
+	return update(func(cfg *Config) error {
+		if _, ok := cfg.Connections[alias]; !ok {
+			return &ConnectionNotFoundError{Alias: alias, Available: connectionAliases(cfg)}
+		}
+		cfg.DefaultConnection = alias
+		return nil
+	})
 }
 
 // GetSetting reads a dotted config key (e.g. "query.timeout").
@@ -213,28 +245,30 @@ func GetSetting(key string) any {
 
 // UpdateSetting writes a dotted config key.
 func UpdateSetting(key string, value any) error {
-	cfg := Read()
-	parts := strings.Split(key, ".")
-	m := settingsToMap(cfg.Settings)
-	parent := m
-	for _, part := range parts[:len(parts)-1] {
-		child, ok := parent[part].(map[string]any)
-		if !ok {
-			child = make(map[string]any)
-			parent[part] = child
+	return update(func(cfg *Config) error {
+		parts := strings.Split(key, ".")
+		m := settingsToMap(cfg.Settings)
+		parent := m
+		for _, part := range parts[:len(parts)-1] {
+			child, ok := parent[part].(map[string]any)
+			if !ok {
+				child = make(map[string]any)
+				parent[part] = child
+			}
+			parent = child
 		}
-		parent = child
-	}
-	parent[parts[len(parts)-1]] = value
-	cfg.Settings = mapToSettings(m)
-	return Write(cfg)
+		parent[parts[len(parts)-1]] = value
+		cfg.Settings = mapToSettings(m)
+		return nil
+	})
 }
 
 // ResetSettings clears all settings to defaults.
 func ResetSettings() error {
-	cfg := Read()
-	cfg.Settings = Settings{}
-	return Write(cfg)
+	return update(func(cfg *Config) error {
+		cfg.Settings = Settings{}
+		return nil
+	})
 }
 
 // ConnectionNotFoundError is returned when a connection alias doesn't exist.

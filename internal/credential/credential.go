@@ -5,7 +5,6 @@ package credential
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 
 	"github.com/shhac/agent-sql/internal/config"
@@ -42,28 +41,41 @@ func credentialsPath() string {
 	return filepath.Join(config.ConfigDir(), "credentials.json")
 }
 
+// store is the shared credential file: 0600 writes into a 0700 parent, atomic
+// replacement, and Update for a locked read-modify-write. This used to be
+// hand-rolled here with os.ReadFile/os.WriteFile, which carried a lost-update
+// race: two concurrent writers (e.g. two `conn add` invocations) could each
+// build their write from a snapshot taken before the other landed, and the
+// loser's entry silently vanished. For a credential that has already been
+// pushed to the OS keychain by the time the index write happens, a lost entry
+// is worse than a lost write: the secret is still in the keychain, but
+// nothing references it — `auth list` can't show it and `auth remove` can't
+// delete it, since it looks the name up in the index first.
+func store() creds.Store {
+	return creds.Store{Path: credentialsPath()}
+}
+
 func readIndex() map[string]credentialEntry {
-	data, err := os.ReadFile(credentialsPath())
-	if err != nil {
+	entries := map[string]credentialEntry{}
+	if err := store().Load(&entries); err != nil {
 		return make(map[string]credentialEntry)
 	}
-	var entries map[string]credentialEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return make(map[string]credentialEntry)
+	if entries == nil {
+		entries = make(map[string]credentialEntry)
 	}
 	return entries
 }
 
-func writeIndex(entries map[string]credentialEntry) error {
-	dir := config.ConfigDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(entries, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(credentialsPath(), append(data, '\n'), 0o600)
+// updateIndex applies mutate to the index under an exclusive lock, so two
+// concurrent credential writes serialize instead of clobbering each other.
+func updateIndex(mutate func(entries map[string]credentialEntry) error) error {
+	entries := map[string]credentialEntry{}
+	return store().Update(&entries, func() error {
+		if entries == nil {
+			entries = make(map[string]credentialEntry)
+		}
+		return mutate(entries)
+	})
 }
 
 // Get retrieves a credential by name. Returns nil if not found.
@@ -94,41 +106,51 @@ func Get(name string) *Credential {
 
 // Store saves a credential. On macOS, sensitive values go to Keychain.
 func Store(name string, cred Credential) (storage string, err error) {
-	entries := readIndex()
+	entry := credentialEntry{
+		Username:        cred.Username,
+		Password:        cred.Password,
+		WritePermission: cred.WritePermission,
+	}
+	storage = "file"
 
 	if keychainAvailable() {
-		if err := writeKeychain(name, &cred); err == nil {
-			entries[name] = credentialEntry{
+		if kcErr := writeKeychain(name, &cred); kcErr == nil {
+			entry = credentialEntry{
 				Username:        "__KEYCHAIN__",
 				Password:        "__KEYCHAIN__",
 				WritePermission: cred.WritePermission,
 				KeychainManaged: true,
 			}
-			return "keychain", writeIndex(entries)
+			storage = "keychain"
 		}
 	}
 
-	// File fallback
-	entries[name] = credentialEntry{
-		Username:        cred.Username,
-		Password:        cred.Password,
-		WritePermission: cred.WritePermission,
+	// The index write is the step that must not race: if the keychain took
+	// the secret above, it already holds it by the time this runs, so an
+	// entry lost to a concurrent writer would leave that secret referenced by
+	// nothing.
+	if err := updateIndex(func(entries map[string]credentialEntry) error {
+		entries[name] = entry
+		return nil
+	}); err != nil {
+		return "", err
 	}
-	return "file", writeIndex(entries)
+	return storage, nil
 }
 
 // Remove deletes a credential.
 func Remove(name string) error {
-	entries := readIndex()
-	entry, ok := entries[name]
-	if !ok {
-		return &NotFoundError{Name: name}
-	}
-	if entry.KeychainManaged && keychainAvailable() {
-		deleteKeychain(name)
-	}
-	delete(entries, name)
-	return writeIndex(entries)
+	return updateIndex(func(entries map[string]credentialEntry) error {
+		entry, ok := entries[name]
+		if !ok {
+			return &NotFoundError{Name: name}
+		}
+		if entry.KeychainManaged && keychainAvailable() {
+			deleteKeychain(name)
+		}
+		delete(entries, name)
+		return nil
+	})
 }
 
 // List returns all credential names.
