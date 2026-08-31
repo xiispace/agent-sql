@@ -1,12 +1,11 @@
 ---
 name: agent-sql
 description: |
-  Read-only-by-default SQL CLI for AI agents. Supports 8 databases: PostgreSQL, CockroachDB, MySQL, MariaDB, SQLite, DuckDB, Snowflake, MSSQL. Use when:
-  - Exploring SQL databases -- tables, columns, indexes, constraints
-  - Querying data (SELECT, sample rows, count, explain plans)
-  - Writing data when explicitly permitted (--write flag)
-  - Checking database connections or adjusting CLI settings
-  Triggers: "sql query", "sql database", "sql table", "sql schema", "postgres", "postgresql", "cockroachdb", "cockroach", "mysql", "sqlite", "duckdb", "parquet", "snowflake", "mssql", "sql server", "sqlserver", "sql connection", "query database", "sql select", "sql insert", "sql explain", "sql count", "sql sample", "database schema", "describe table", "sql columns", "sql indexes", "mariadb", "maria db"
+  Read-only-by-default SQL CLI supporting PostgreSQL, CockroachDB, MySQL,
+  MariaDB, SQLite, DuckDB, Snowflake, and MSSQL. Use when exploring schemas,
+  tables, columns, indexes, and constraints, running SELECTs, explain plans,
+  samples, or counts, querying parquet through DuckDB, managing connections,
+  or writing data when explicitly permitted with --write.
 allowed-tools: Bash(agent-sql *) Read Grep Glob
 ---
 
