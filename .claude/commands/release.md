@@ -21,9 +21,19 @@ formula bump.**
    - Tests, vet, and lint pass (e.g. `make test` / `go test ./...`, `go vet ./...`,
      `make lint` / `golangci-lint run ./...`). The version is injected from the tag
      (`-ldflags -X main.version=…`) — there is no version file to edit.
-3. Compute the new version by bumping the latest tag
-   (`git describe --tags --abbrev=0`): patch → x.y.(z+1), minor → x.(y+1).0,
-   major → (x+1).0.0.
+3. Compute the new version by bumping the latest **release** tag:
+
+   ```bash
+   latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
+   ```
+
+   patch → x.y.(z+1), minor → x.(y+1).0, major → (x+1).0.0.
+
+   Do **not** use `git describe --tags --abbrev=0` here. It returns whichever
+   tag is nearest in history regardless of series, so a `skill-v*` tag from a
+   skill-only publish — or any other non-release tag — comes back as though it
+   were the current version, and the wrong series gets bumped. Filtering on
+   `v*` cannot match `skill-v*`, which does not start with `v`.
 4. Tag and push — this is the whole release:
    ```bash
    git tag "v${new_version}"
