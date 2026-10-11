@@ -15,6 +15,7 @@ package resolve
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"strings"
@@ -33,13 +34,46 @@ type Opts struct {
 	Connection string
 	Write      bool
 	Timeout    int
+	// Database overrides the connection's database (-D). It applies to stored
+	// aliases and ad-hoc URLs alike; file-based drivers reject it.
+	Database string
+	// FallbackDatabase retries once on the driver's default database
+	// (driver.Registry DefaultDB: postgres, defaultdb) when the connection's
+	// own database does not exist. For commands that need the server, not
+	// a database: schema databases.
+	FallbackDatabase bool
 }
 
 // Resolve resolves a connection alias, URL, or file path to a driver.Connection.
 func Resolve(ctx context.Context, opts Opts) (driver.Connection, error) {
 	alias := resolveAlias(opts.Connection)
+	conn, err := resolveOnce(ctx, alias, opts)
+	if err != nil && opts.FallbackDatabase && opts.Database == "" && stderrors.Is(err, driver.ErrUnknownDatabase) {
+		if db := driver.Lookup(driverOf(alias)).DefaultDB; db != "" {
+			opts.Database = db
+			return resolveOnce(ctx, alias, opts)
+		}
+	}
+	return conn, err
+}
 
-	conn, err := resolveAdHoc(ctx, alias, opts.Write)
+// driverOf names the driver an alias or URL resolves to, "" when unknown.
+func driverOf(alias string) driver.Driver {
+	if driver.IsConnectionURL(alias) {
+		return driver.DetectDriverFromURL(alias)
+	}
+	conn := config.GetConnection(alias)
+	if conn == nil {
+		return ""
+	}
+	if conn.Driver == "" && conn.URL != "" {
+		return driver.DetectDriverFromURL(conn.URL)
+	}
+	return driver.Driver(conn.Driver)
+}
+
+func resolveOnce(ctx context.Context, alias string, opts Opts) (driver.Connection, error) {
+	conn, err := resolveAdHoc(ctx, alias, opts.Write, opts.Database)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +81,22 @@ func Resolve(ctx context.Context, opts Opts) (driver.Connection, error) {
 		return conn, nil
 	}
 
-	return resolveFromConfig(ctx, alias, opts.Write)
+	return resolveFromConfig(ctx, alias, opts.Write, opts.Database)
+}
+
+// rejectDatabaseOverride returns the -D error for drivers whose connection is
+// a single database file, or nil when the driver honours Connection.Database.
+func rejectDatabaseOverride(d driver.Driver, database string) error {
+	if database == "" {
+		return nil
+	}
+	if info := driver.Lookup(d); info.SingleFile {
+		return errors.New(
+			fmt.Sprintf("-D is not supported for %s connections", d),
+			errors.FixableByAgent,
+		).WithHint(fmt.Sprintf("%s connections are a single database file; drop -D", info.DisplayLabel))
+	}
+	return nil
 }
 
 func resolveAlias(explicit string) string {
@@ -60,7 +109,7 @@ func resolveAlias(explicit string) string {
 	return config.GetDefaultAlias()
 }
 
-func resolveAdHoc(ctx context.Context, connStr string, write bool) (driver.Connection, error) {
+func resolveAdHoc(ctx context.Context, connStr string, write bool, database string) (driver.Connection, error) {
 	if connStr == "" {
 		return nil, errors.New(
 			fmt.Sprintf("No connection specified and no default configured. Available connections: %s. %s", listAliases(), errors.ConnTip),
@@ -76,11 +125,17 @@ func resolveAdHoc(ctx context.Context, connStr string, write bool) (driver.Conne
 		if write {
 			return nil, rejectAdHocWrite()
 		}
-		return connectFromURL(ctx, d, connStr)
+		if err := rejectDatabaseOverride(d, database); err != nil {
+			return nil, err
+		}
+		return connectFromURL(ctx, d, connStr, database)
 	}
 
 	if driver.IsFilePath(connStr) {
 		d := driver.DetectDriverFromURL(connStr)
+		if err := rejectDatabaseOverride(d, database); err != nil {
+			return nil, err
+		}
 		switch d {
 		case driver.DriverDuckDB:
 			if write {
@@ -100,7 +155,7 @@ func resolveAdHoc(ctx context.Context, connStr string, write bool) (driver.Conne
 	return nil, nil
 }
 
-func resolveFromConfig(ctx context.Context, alias string, write bool) (driver.Connection, error) {
+func resolveFromConfig(ctx context.Context, alias string, write bool, database string) (driver.Connection, error) {
 	if alias == "" {
 		return nil, errors.New(
 			fmt.Sprintf("No connection specified and no default configured. Available connections: %s.", listAliases()),
@@ -128,11 +183,30 @@ func resolveFromConfig(ctx context.Context, alias string, write bool) (driver.Co
 		}
 	}
 
+	if database != "" {
+		if err := rejectDatabaseOverride(d, database); err != nil {
+			return nil, err
+		}
+		// Copy before overriding: config.GetConnection may hand back shared
+		// state, and -D is per-process, never persisted.
+		overridden := *conn
+		overridden.Database = database
+		conn = &overridden
+	}
+
 	return connectFromConfig(ctx, d, conn, !write)
 }
 
-// connectFromURL dispatches an ad-hoc URL to the right driver.
-func connectFromURL(ctx context.Context, d driver.Driver, connStr string) (driver.Connection, error) {
+// connectFromURL dispatches an ad-hoc URL to the right driver. A non-empty
+// database (-D) replaces the URL's database path.
+func connectFromURL(ctx context.Context, d driver.Driver, connStr, database string) (driver.Connection, error) {
+	if database != "" && d != driver.DriverSnowflake {
+		rewritten, err := withURLDatabase(connStr, database)
+		if err != nil {
+			return nil, err
+		}
+		connStr = rewritten
+	}
 	switch d {
 	case driver.DriverSQLite:
 		return connectSqliteAdHoc(ctx, strings.TrimPrefix(connStr, "sqlite://"), false)
@@ -145,7 +219,7 @@ func connectFromURL(ctx context.Context, d driver.Driver, connStr string) (drive
 	case driver.DriverMySQL, driver.DriverMariaDB:
 		return connectMysqlLikeURL(d, connStr)
 	case driver.DriverSnowflake:
-		return connectSnowflakeURL(connStr)
+		return connectSnowflakeURL(connStr, database)
 	case driver.DriverMSSQL:
 		return connectMssqlURL(connStr)
 	}

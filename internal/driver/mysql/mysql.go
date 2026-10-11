@@ -4,7 +4,8 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"strings"
+
+	gomysql "github.com/go-sql-driver/mysql"
 
 	"github.com/shhac/agent-sql/internal/driver"
 )
@@ -58,18 +59,23 @@ func Connect(opts Opts) (driver.Connection, error) {
 		}
 	}
 
-	return &mysqlConn{db: db, readonly: opts.Readonly, variant: opts.Variant}, nil
+	return &mysqlConn{db: db, readonly: opts.Readonly, variant: opts.Variant, database: opts.Database, cfg: cfg}, nil
 }
 
 type mysqlConn struct {
 	db       *sql.DB
 	readonly bool
 	variant  string
+	// database is the connection's default database (-D or the stored/URL
+	// database), the scope of whole-database schema commands. Empty when the
+	// connection has no default database.
+	database string
+	// cfg is the connection's configuration; copy sessions clone it to open
+	// their own dedicated connections with copy-specific settings.
+	cfg *gomysql.Config
 }
 
-func (c *mysqlConn) QuoteIdent(name string) string {
-	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
-}
+func (c *mysqlConn) QuoteIdent(name string) string { return quoteIdent(name) }
 
 func (c *mysqlConn) BuildSampleSelect(quotedTable, whereClause string, n int) string {
 	return driver.SuffixLimitSelect(quotedTable, whereClause, n)

@@ -7,6 +7,7 @@ Read-only-by-default SQL CLI for AI agents.
 - **Read-only by default** -- write access requires explicit opt-in per credential and per query
 - **Defense in depth** -- driver-level, parser-level, and credential-level enforcement layers
 - **PostgreSQL, CockroachDB, MySQL, MariaDB, SQLite, DuckDB, Snowflake, and MSSQL** -- eight drivers, one interface
+- **Schema diff and copy** -- compare a schema between two connections and sync structure and rows across them, with credentials staying in-process (MySQL, MariaDB, PostgreSQL)
 - **Single binary** -- compiled Go binary, no runtime dependencies (DuckDB requires `duckdb` CLI installed separately)
 
 ## Installation
@@ -146,6 +147,8 @@ If `--form` cannot run (SSH, headless CI), the CLI fails with `fixable_by="human
 ### 2. Explore schema
 
 ```bash
+agent-sql schema databases                     # databases on the server
+agent-sql schema tables -D shop                # -D/--database: any database on the same server
 agent-sql schema tables
 agent-sql schema describe users
 agent-sql schema indexes users
@@ -162,10 +165,27 @@ agent-sql query count users --where "age >= 21"
 agent-sql query explain "SELECT * FROM orders JOIN users ON orders.user_id = users.id"
 ```
 
+### 4. Compare and sync between connections (MySQL / MariaDB / PostgreSQL)
+
+```bash
+# What is different? (read-only on both sides)
+agent-sql schema diff --from stage --to dev --schema shop
+agent-sql schema diff --from stage --to dev --schema shop --format sql   # DDL script, destructive lines commented
+
+# Preview, then bring dev's structure in line while keeping dev's rows
+agent-sql copy --from stage --to dev --schema shop --structure sync --data none --dry-run
+agent-sql copy --from stage --to dev --schema shop --structure sync --data none
+
+# Also merge stage's rows into dev by primary key, keeping dev-only rows
+agent-sql copy --from stage --to dev --schema shop --structure sync --data sync --no-delete
+```
+
+`copy` takes a structure mode (`recreate`, `sync`, `none`) and a data mode (`replace`, `append`, `upsert`, `sync`, `none`); both are required. It reads the source inside one consistent read-only snapshot, streams rows as raw bytes in bounded batches, and writes only to `--to`, which must be a stored connection whose credential has write permission (`--dry-run` only reads it, so a read-only credential can preview). `upsert` and `sync` compare rows by key and write plain INSERT / UPDATE-by-key, `sync` deleting target-only rows first; a row that collides with another on a secondary unique index fails the table instead of overwriting it. Anything that can lose target data — truncating, deleting target-only rows, dropping or narrowing columns, recreating existing tables — is refused with the full list unless `--allow-destructive`. See `agent-sql copy usage`.
+
 ## Command map
 
 ```text
-agent-sql [-c <alias>] [--format jsonl|json|yaml] [--color auto|always|never] [--full] [--expand <fields>] [--timeout <ms>] [-d/--debug]
+agent-sql [-c <alias>] [-D <database>] [--format jsonl|json|yaml] [--color auto|always|never] [--full] [--expand <fields>] [--timeout <ms>] [-d/--debug]
 ├── credential                                         # set up credentials first
 │   ├── add <alias> --username <u> --password <p> [--write]
 │   ├── remove <alias> [--force]
@@ -186,18 +206,22 @@ agent-sql [-c <alias>] [--format jsonl|json|yaml] [--color auto|always|never] [-
 │   ├── list-keys
 │   └── usage
 ├── schema
+│   ├── databases [--include-system] [--pattern <glob>]
 │   ├── tables [--include-system]
 │   ├── describe <table> [--detailed]
 │   ├── indexes [table]
 │   ├── constraints [table] [--type]
 │   ├── search <pattern>
 │   ├── dump [--tables] [--include-system]
+│   ├── diff --from <conn> --to <conn> --schema <s> [--to-schema] [--objects] [--format sql]
 │   └── usage
 ├── query
 │   ├── run "<sql>" [--limit] [--write] [--compact]
 │   ├── sample <table> [--limit] [--where]
 │   ├── explain "<sql>" [--analyze]
 │   ├── count <table> [--where]
+│   └── usage
+├── copy --from <conn> --to <conn> --schema <s> --structure <mode> --data <mode> [--dry-run]
 │   └── usage
 ├── run "<sql>" [--limit] [--write] [--compact]    # top-level alias for query run
 └── usage                                           # LLM-optimized docs
@@ -219,13 +243,16 @@ agent-sql is read-only by default with defense in depth:
 
 Write operations require both a credential with `writePermission` and the `--write` flag on the query itself. This two-gate design prevents accidental writes even when credentials allow them.
 
+`copy` is a write command by purpose, so it takes no `--write` flag, but `--to` goes through the same credential gate (a stored connection with `writePermission`; ad-hoc URLs and files are refused). `--from` is always opened read-only, inside a consistent snapshot. Changes that can lose target data need `--allow-destructive`, and copying a schema onto itself on the same server is refused. `schema diff` is read-only on both sides.
+
 ## Output
 
 - Default output is JSONL to stdout -- one JSON object per line, no envelope. Use `--format json` or `--format yaml` for structured formats; `--format csv` on query commands only.
 - Query results (`query run`, `query sample`): each line is `{"col": val, ..., "@truncated": null}`. When more rows exist, the last line is `{"@pagination": {"has_more": true, "row_count": N, "hint": "..."}}`.
-- List output (`schema tables|indexes|constraints`, `connection list`, `credential list`, `config list-keys`): one JSON record per line, no wrapper key. `--format json`/`yaml` wraps the records in a `{"data": [...]}` envelope.
+- List output (`schema databases|tables|indexes|constraints`, `connection list`, `credential list`, `config list-keys`): one JSON record per line, no wrapper key. `--format json`/`yaml` wraps the records in a `{"data": [...]}` envelope.
 - Single resources and receipts (`schema describe|search|dump`, `query count|explain`, write receipts, connection/credential/config receipts): one compact JSON line by default; pretty JSON with `--format json`, YAML with `--format yaml`. Write receipts look like `{"result": "ok", "rows_affected": 5, "command": "UPDATE"}`.
 - CSV applies to query commands only; elsewhere `--format csv` is rejected with `unknown format "csv", expected: json, yaml, jsonl`. Only `query.format` may persist csv; within query commands, non-tabular output (count, explain, write receipts) falls back to jsonl when csv is in effect
+- `schema diff` and `copy` emit one NDJSON record per object/table followed by a receipt line; `--format json`/`yaml` gives `{"data": [...], "summary": {...}}`
 - Errors always go to stderr as JSON `{ "error": "...", "fixable_by": "agent"|"human"|"retry", "hint"?: "...", "retry_after_seconds"?: N }` with non-zero exit code
 - Non-error advisories go to stderr as structured `{"notice": "...", "hint": "..."}` JSON lines
 - `--color auto|always|never` (default auto) colorizes JSON/YAML/NDJSON when the stream is a terminal; piped output stays plain
@@ -267,7 +294,7 @@ agent-sql config reset                                 # reset all to defaults
 
 ## Connection resolution
 
-Resolution order: `-c` flag > `AGENT_SQL_CONNECTION` env > config default. The `-c` flag accepts saved aliases, file paths (e.g. `./data.db`, `./data.duckdb`), and connection URLs (e.g. `postgres://user:pass@host/db`, `mariadb://user:pass@host/db`, `duckdb://`, `mssql://user:pass@host/db`, `sqlserver://user:pass@host/db`).
+Resolution order: `-c` flag > `AGENT_SQL_CONNECTION` env > config default. `-D/--database <db>` then overrides the resolved connection's database for that invocation (pg, cockroachdb, mysql, mariadb, mssql, snowflake; sqlite/duckdb reject it). A MySQL/MariaDB connection stored without a database connects with no default database, like the `mysql` client without `-D`; `schema databases` lists what the credential can see, and MySQL schema commands also accept `db.table`. `schema diff` and `copy` take `--from`/`--to` explicitly and never fall back; `-D` applies to both sides. The `-c` flag accepts saved aliases, file paths (e.g. `./data.db`, `./data.duckdb`), and connection URLs (e.g. `postgres://user:pass@host/db`, `mariadb://user:pass@host/db`, `duckdb://`, `mssql://user:pass@host/db`, `sqlserver://user:pass@host/db`).
 
 ## Environment variables
 

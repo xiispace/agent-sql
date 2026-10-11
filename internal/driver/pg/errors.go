@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/shhac/agent-sql/internal/driver"
 	"github.com/shhac/agent-sql/internal/errors"
 )
 
@@ -71,10 +72,17 @@ func classifyPgError(pgErr *pgconn.PgError) error {
 			WithHint(errors.HintConnectionFailed)
 	case "3D000": // invalid_catalog_name (database not found)
 		return errors.New(msg, errors.FixableByHuman).
-			WithHint("Database not found. Check the database name.")
+			WithHint("Database not found. Check the database name, or list the server's databases with `schema databases`.").
+			WithCause(stderrors.Join(driver.ErrUnknownDatabase, pgErr))
 	case "42P07": // duplicate_table
 		return errors.New(msg, errors.FixableByAgent).
 			WithHint("Table already exists.")
+	case "2BP01": // dependent_objects_still_exist
+		return errors.New(msg, errors.FixableByAgent).
+			WithHint("Other objects (views, foreign keys from other tables) depend on it. With copy, include dependent views via --objects views, or the referencing tables via --tables.")
+	case "23503": // foreign_key_violation
+		return errors.New(msg, errors.FixableByAgent).
+			WithHint("A foreign key rejected the row. copy writes parents before children, but cannot switch foreign key checks off without superuser (session_replication_role); include the referenced tables, or copy with a role that may.")
 	}
 
 	// Fall back to error class (first two characters of SQLSTATE)

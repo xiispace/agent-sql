@@ -333,3 +333,32 @@ func (c *pgConn) SearchSchema(ctx context.Context, pattern string) (*driver.Sear
 
 	return &driver.SearchResult{Tables: tables, Columns: columns}, nil
 }
+
+// ListDatabases reads pg_database. Databases that refuse connections are never
+// listed; templates count as system databases.
+func (c *pgConn) ListDatabases(ctx context.Context, includeSystem bool) ([]driver.DatabaseInfo, error) {
+	rows, err := c.conn.Query(ctx, `
+		SELECT d.datname, pg_encoding_to_char(d.encoding), d.datcollate,
+		       pg_get_userbyid(d.datdba), d.datistemplate
+		FROM pg_database d
+		WHERE d.datallowconn
+		ORDER BY d.datname`)
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	defer rows.Close()
+
+	var out []driver.DatabaseInfo
+	for rows.Next() {
+		var d driver.DatabaseInfo
+		var template bool
+		if err := rows.Scan(&d.Name, &d.Charset, &d.Collation, &d.Owner, &template); err != nil {
+			return nil, err
+		}
+		if template && !includeSystem {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}

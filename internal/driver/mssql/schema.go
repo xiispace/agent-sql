@@ -402,3 +402,34 @@ type fkRef struct {
 	table   string
 	columns []string
 }
+
+// mssqlSystemDatabases are hidden from `schema databases` unless --include-system.
+var mssqlSystemDatabases = map[string]bool{"master": true, "model": true, "msdb": true, "tempdb": true}
+
+// ListDatabases reads sys.databases, which SQL Server filters to the
+// databases the login can see.
+func (c *mssqlConn) ListDatabases(ctx context.Context, includeSystem bool) ([]driver.DatabaseInfo, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT name, collation_name FROM sys.databases ORDER BY name`)
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []driver.DatabaseInfo
+	for rows.Next() {
+		var name string
+		var collation *string
+		if err := rows.Scan(&name, &collation); err != nil {
+			return nil, err
+		}
+		if !includeSystem && mssqlSystemDatabases[name] {
+			continue
+		}
+		d := driver.DatabaseInfo{Name: name}
+		if collation != nil {
+			d.Collation = *collation
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}

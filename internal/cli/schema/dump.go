@@ -32,7 +32,7 @@ func registerDump(parent *cobra.Command, globals func() SchemaGlobals) {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals()
-			return shared.WithConnection(g.Connection, g.TimeoutMS, func(ctx context.Context, drv driver.Connection) error {
+			return shared.WithConnection(g.resolveOpts(), func(ctx context.Context, drv driver.Connection) error {
 				// Handle --format sql via DDLDumper interface
 				if g.Format == "sql" {
 					return dumpSQL(ctx, drv, tables, includeSystem)

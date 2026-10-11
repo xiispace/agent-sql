@@ -1,8 +1,10 @@
 package resolve
 
 import (
+	stderrors "errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/shhac/agent-sql/internal/errors"
@@ -30,7 +32,7 @@ func parseGenericURL(connStr string) (genericURL, error) {
 	u, err := url.Parse(connStr)
 	if err != nil {
 		return genericURL{}, errors.New(
-			fmt.Sprintf("Invalid connection URL %q: %v", connStr, err),
+			fmt.Sprintf("Invalid connection URL %q: %s", redactURL(connStr), urlParseCause(connStr, err)),
 			errors.FixableByHuman,
 		)
 	}
@@ -67,4 +69,43 @@ func parsePort(s string, def int) int {
 		return def
 	}
 	return p
+}
+
+// withURLDatabase returns connStr with its database path replaced by
+// database. Userinfo and the query string are preserved untouched.
+func withURLDatabase(connStr, database string) (string, error) {
+	u, err := url.Parse(connStr)
+	if err != nil {
+		return "", errors.New(
+			fmt.Sprintf("Invalid connection URL %q: %s", redactURL(connStr), urlParseCause(connStr, err)),
+			errors.FixableByHuman,
+		)
+	}
+	u.Path = "/" + database
+	u.RawPath = ""
+	return u.String(), nil
+}
+
+// urlUserinfo matches the userinfo of a URL that may not parse: everything
+// between "://" and the last "@". It errs towards hiding too much, since a
+// malformed password may hold any character.
+var urlUserinfo = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*://).*@`)
+
+// redactURL hides a connection string's userinfo for error messages: an
+// ad-hoc -c URL may embed a password, and errors reach the LLM.
+func redactURL(s string) string { return urlUserinfo.ReplaceAllString(s, "${1}***@") }
+
+// urlParseCause gives the reason a URL did not parse, without *url.Error's
+// verbatim copy of the input. When the URL has userinfo the reason is
+// dropped too: the parser may quote a fragment of the password (a password
+// holding "/" reads as an invalid port).
+func urlParseCause(connStr string, err error) string {
+	if urlUserinfo.MatchString(connStr) {
+		return "malformed URL (details hidden: it carries credentials)"
+	}
+	var ue *url.Error
+	if stderrors.As(err, &ue) {
+		return ue.Err.Error()
+	}
+	return err.Error()
 }

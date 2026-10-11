@@ -314,3 +314,22 @@ func keySeqNum(row map[string]any) int {
 	n, _ := strconv.Atoi(s)
 	return n
 }
+
+// ListDatabases runs SHOW DATABASES, which Snowflake filters by the role's
+// privileges. The shared SNOWFLAKE database counts as a system database.
+func (c *snowflakeConn) ListDatabases(ctx context.Context, includeSystem bool) ([]driver.DatabaseInfo, error) {
+	resp, err := c.executeStatement(ctx, "SHOW DATABASES", nil)
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	rows := parseRows(resp.Data, resp.ResultSetMetaData.RowType)
+	out := make([]driver.DatabaseInfo, 0, len(rows))
+	for _, row := range rows {
+		name := stringVal(row, "name")
+		if !includeSystem && strings.EqualFold(name, "SNOWFLAKE") {
+			continue
+		}
+		out = append(out, driver.DatabaseInfo{Name: name, Owner: stringVal(row, "owner")})
+	}
+	return out, nil
+}

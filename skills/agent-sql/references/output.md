@@ -158,6 +158,17 @@ One JSON line by default (pretty with `--format json`). Plan shape is driver-spe
 {"command":"UPDATE","result":"ok","rows_affected":5}
 ```
 
+## Schema databases (`schema databases`)
+
+NDJSON records by default; `{"data": [...]}` envelope with `--format json`/`yaml`:
+
+```jsonl
+{"name":"meowth","charset":"utf8mb4","collation":"utf8mb4_0900_ai_ci"}
+{"name":"newrails_risk","charset":"utf8mb4","collation":"utf8mb4_0900_ai_ci"}
+```
+
+PG adds `owner`; Snowflake reports `name` and `owner`; MSSQL `name` and `collation`. An empty list is not an error: it comes with a stderr notice (`{"notice":"no databases visible to this credential","hint":"..."}`).
+
 ## Schema tables (`schema tables`)
 
 NDJSON records by default; `{"data": [...]}` envelope with `--format json`/`yaml`:
@@ -209,6 +220,43 @@ NDJSON records by default; `{"data": [...]}` envelope with `--format json`/`yaml
 ## Schema dump (`schema dump`)
 
 Combines tables, columns, indexes, and constraints in one response (a single resource: one JSON line by default). Same structure as individual commands, nested under the table name.
+
+## Schema diff (`schema diff`)
+
+One NDJSON record per differing object (identical ones only with `--show-identical`), then one receipt line:
+
+```jsonl
+{"object":"table","name":"cus_contract","status":"only_in_source","destructive":false,"action":"create"}
+{"object":"column","table":"cus_account","name":"status","status":"different","destructive":true,"action":"modify","changes":{"type":{"from":"varchar(64)","to":"varchar(32)"}},"hint":"narrowing varchar(64) to varchar(32) can truncate data"}
+{"object":"index","table":"cus_customer","name":"idx_merchant","status":"only_in_target","destructive":false,"action":"none","hint":"pass --drop-extra to drop"}
+{"from":"stage","to":"dev","schema":"meowth","to_schema":"meowth","only_in_source":9,"only_in_target":0,"different":3,"identical":9,"destructive":1}
+```
+
+- `object`: `table`, `column`, `index`, `foreign_key`, `view`, `routine`, `trigger`, `event`. `table` is set on columns, indexes, foreign keys and triggers.
+- `status`: `only_in_source`, `only_in_target`, `different`, `identical`.
+- `action` (what applying does to the target): `create`, `add`, `alter`, `modify`, `recreate` (drop + add an index/FK), `replace` (view/routine/trigger/event), `drop`, `none`.
+- `changes`: per attribute, `from` is the target's current value and `to` the source's (`null` = absent).
+- Receipt counts: one per record; identical objects count once per table/view/routine/trigger/event.
+- `--format json`/`yaml`: `{"data": [records], "summary": receipt}`.
+- `--format sql`: a DDL script starting with `USE`, in dependency order; destructive statements are prefixed `-- destructive: pass --allow-destructive to include` and commented out unless `--allow-destructive`. `-- no differences` when there is nothing to do.
+
+## Copy (`copy`)
+
+One NDJSON record per table as it completes, then one receipt line:
+
+```jsonl
+{"table":"cus_contract","structure":"created","rows_read":484,"inserted":484,"updated":0,"deleted":0,"duration_ms":312}
+{"table":"orders","structure":"unchanged","rows_read":2,"inserted":0,"updated":0,"deleted":0,"upserted":2,"duration_ms":4}
+{"from":"stage","to":"dev","schema":"meowth","to_schema":"meowth","structure":"sync","data":"sync","tables":2,"statements":3,"rows_read":486,"inserted":484,"updated":0,"deleted":0,"upserted":2,"duration_ms":330}
+```
+
+- `structure`: `created`, `recreated`, `altered`, `dropped` (`--drop-extra`), `unchanged`.
+- `deleted` counts rows `sync` deleted. Tables whose existing rows were discarded wholesale (TRUNCATE for `replace`, DROP for `recreate`) carry `"cleared": true` instead, and the receipt counts them in `cleared`; a real run does not count those rows (that would scan every table), `--dry-run` does, in `deleted`. `upsert` reports `upserted` (rows inserted or updated; unchanged rows are not rewritten) instead of `inserted`/`updated`.
+- PostgreSQL without superuser, `--data sync`: records are emitted together after the final delete pass, so their counts are complete.
+- `--dry-run`: records and receipt carry `"dry_run": true` with planned counts; when the real run would need it, the receipt adds `"requires_allow_destructive": true` and a `destructive` list. `--dry-run --format sql` prints the DDL instead.
+- `--continue-on-error`: failed tables carry `error`; the receipt lists `failures` (`{table, statement?, error}`) and the command exits non-zero.
+- Progress for long tables: stderr notices every 100,000 rows.
+- `--format json`/`yaml`: `{"data": [records], "summary": receipt}`.
 
 ## Connection list (`connection list`)
 

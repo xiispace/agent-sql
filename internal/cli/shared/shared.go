@@ -12,6 +12,7 @@ import (
 // GlobalFlags holds global CLI flag values shared across sub-packages.
 type GlobalFlags struct {
 	Connection string
+	Database   string
 	Format     string
 	Expand     string
 	Full       bool
@@ -30,15 +31,20 @@ func MakeContext(timeoutMs int) (context.Context, context.CancelFunc) {
 	return ctx, func() {}
 }
 
+// ResolveOpts returns the read-mode resolve options the global flags select.
+func (g *GlobalFlags) ResolveOpts() resolve.Opts {
+	return resolve.Opts{Connection: g.Connection, Database: g.Database, Timeout: g.TimeoutMS}
+}
+
 // WithConnection resolves a connection, runs fn, and handles cleanup. Errors
 // from resolution or fn are propagated to the caller (cobra); libcli.Run renders
 // them as the family's structured JSON on stderr exactly once. This helper does
 // NOT pre-render — doing so under libcli.Run would double-print.
-func WithConnection(conn string, timeout int, fn func(ctx context.Context, drv driver.Connection) error) error {
-	ctx, cancel := MakeContext(timeout)
+func WithConnection(opts resolve.Opts, fn func(ctx context.Context, drv driver.Connection) error) error {
+	ctx, cancel := MakeContext(opts.Timeout)
 	defer cancel()
 
-	drv, err := resolve.Resolve(ctx, resolve.Opts{Connection: conn, Timeout: timeout})
+	drv, err := resolve.Resolve(ctx, opts)
 	if err != nil {
 		return err
 	}

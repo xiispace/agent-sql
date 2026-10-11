@@ -37,8 +37,10 @@ type Info struct {
 	DefaultPort int
 
 	// DefaultDB is the database name used when none is configured.
-	// Empty when the driver requires the user to specify one (mssql)
-	// or when the concept doesn't apply (sqlite, duckdb).
+	// Empty when the driver can connect without one (mysql, mariadb:
+	// no default database, like the mysql client without -D), when the
+	// server picks one (mssql), or when the concept doesn't apply
+	// (sqlite, duckdb).
 	DefaultDB string
 
 	// HostPort is true for drivers that connect to host:port (pg,
@@ -46,6 +48,10 @@ type Info struct {
 	// Drives display rendering: HostPort drivers get
 	// "scheme://host:port/database" URLs.
 	HostPort bool
+
+	// SingleFile is true for drivers whose connection is one database file
+	// (sqlite, duckdb): there is no database to pick, so -D is rejected.
+	SingleFile bool
 
 	// Credential describes the authentication shape required for
 	// stored connections of this driver.
@@ -69,12 +75,12 @@ var Registry = map[Driver]Info{
 	},
 	DriverMySQL: {
 		Driver: DriverMySQL, DisplayLabel: "MySQL",
-		Scheme: "mysql", DefaultPort: 3306, DefaultDB: "mysql",
+		Scheme: "mysql", DefaultPort: 3306,
 		HostPort: true, Credential: CredentialUserPass,
 	},
 	DriverMariaDB: {
 		Driver: DriverMariaDB, DisplayLabel: "MariaDB",
-		Scheme: "mariadb", DefaultPort: 3306, DefaultDB: "mysql",
+		Scheme: "mariadb", DefaultPort: 3306,
 		HostPort: true, Credential: CredentialUserPass,
 	},
 	DriverMSSQL: {
@@ -84,11 +90,11 @@ var Registry = map[Driver]Info{
 	},
 	DriverSQLite: {
 		Driver: DriverSQLite, DisplayLabel: "SQLite",
-		Scheme: "sqlite", Credential: CredentialNone,
+		Scheme: "sqlite", SingleFile: true, Credential: CredentialNone,
 	},
 	DriverDuckDB: {
 		Driver: DriverDuckDB, DisplayLabel: "DuckDB",
-		Scheme: "duckdb", Credential: CredentialNone,
+		Scheme: "duckdb", SingleFile: true, Credential: CredentialNone,
 	},
 	DriverSnowflake: {
 		Driver: DriverSnowflake, DisplayLabel: "Snowflake",

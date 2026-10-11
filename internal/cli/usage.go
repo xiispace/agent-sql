@@ -45,21 +45,33 @@ COMMANDS:
   query explain "<sql>" [--analyze]                    EXPLAIN a query
   query count <table> [--where]                        Count rows
 
+  schema databases [--include-system] [--pattern]     Databases the credential can see
   schema tables [--include-system]                     List tables
   schema describe <table> [--detailed]                  Columns, types, nullability
   schema indexes [table]                               Index details
   schema constraints [table] [--type]                  PKs, FKs, unique, check
   schema search <pattern>                              Search table/column names
   schema dump [--tables] [--include-system]            Full schema dump
+  schema diff --from <c> --to <c> --schema <s> [--to-schema] [--format sql]
+                                                       Compare a schema across two connections (read-only)
 
-GLOBAL FLAGS: -c <connection> (alias, file path, or URL), --format jsonl|json|yaml (csv on query commands), --expand <fields>, --full, --compact (-C), --timeout <ms>, --color auto|always|never, -d/--debug (log [debug] connection + query to stderr)
+  copy --from <c> --to <c> --schema <s> --structure recreate|sync|none --data replace|append|upsert|sync|none
+       [--dry-run] [--allow-destructive] [--no-delete] [--where 'table=cond']
+                                                       Copy structure/rows between connections (writes --to only)
+
+GLOBAL FLAGS: -c <connection> (alias, file path, or URL), -D/--database <db> (override the connection's database; not sqlite/duckdb), --format jsonl|json|yaml (csv on query commands), --expand <fields>, --full, --compact (-C), --timeout <ms>, --color auto|always|never, -d/--debug (log [debug] connection + query to stderr)
 
 CONNECTION: -c flag > AGENT_SQL_CONNECTION env > config default.
   -c accepts connection aliases, file paths (./data.db, ./analytics.duckdb), or URLs.
   PG, CockroachDB, MySQL, MariaDB, MSSQL, and Snowflake require a stored credential for named connections.
   SQLite and DuckDB use file paths (credential optional).
+  -D <db> picks another database on the same server for any command; on MySQL/MariaDB,
+  schema describe/indexes/constraints also accept db.table. A MySQL connection with no
+  database has no default ("schema databases" lists the candidates).
 
-SAFETY: Read-only by default. Use --write to opt in to writes.
+SAFETY: Read-only by default. Use --write to opt in to writes. copy writes only to --to,
+  through the same gate (stored connection + credential writePermission), and refuses
+  anything that can lose target data without --allow-destructive.
 
 LLM SECRET SAFETY: Never put a user-pasted password into --password. Instruct the
   user to run "credential add <name> [--username <u>] --form" themselves — a native

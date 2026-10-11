@@ -100,7 +100,7 @@ func registerRun(parent *cobra.Command, globals func() *shared.GlobalFlags) {
 			g := globals()
 			ctx, cancel := shared.MakeContext(g.TimeoutMS)
 			defer cancel()
-			drv, err := resolve.Resolve(ctx, resolve.Opts{Connection: g.Connection, Write: write, Timeout: g.TimeoutMS})
+			drv, err := resolve.Resolve(ctx, resolve.Opts{Connection: g.Connection, Database: g.Database, Write: write, Timeout: g.TimeoutMS})
 			if err != nil {
 				return err
 			}
@@ -131,7 +131,7 @@ func registerSample(parent *cobra.Command, globals func() *shared.GlobalFlags) {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals()
-			return shared.WithConnection(g.Connection, g.TimeoutMS, func(ctx context.Context, drv driver.Connection) error {
+			return shared.WithConnection(g.ResolveOpts(), func(ctx context.Context, drv driver.Connection) error {
 				effectiveLimit := limit
 				if effectiveLimit <= 0 {
 					effectiveLimit = 5
@@ -190,7 +190,7 @@ func registerExplain(parent *cobra.Command, globals func() *shared.GlobalFlags) 
 			}
 			sql := prefix + " " + args[0]
 
-			return shared.WithConnection(g.Connection, g.TimeoutMS, func(ctx context.Context, drv driver.Connection) error {
+			return shared.WithConnection(g.ResolveOpts(), func(ctx context.Context, drv driver.Connection) error {
 				result, err := drv.Query(ctx, sql, driver.QueryOpts{})
 				if err != nil {
 					return err
@@ -213,7 +213,7 @@ func registerCount(parent *cobra.Command, globals func() *shared.GlobalFlags) {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals()
-			return shared.WithConnection(g.Connection, g.TimeoutMS, func(ctx context.Context, drv driver.Connection) error {
+			return shared.WithConnection(g.ResolveOpts(), func(ctx context.Context, drv driver.Connection) error {
 				quoted := drv.QuoteIdent(args[0])
 				whereClause := ""
 				if where != "" {

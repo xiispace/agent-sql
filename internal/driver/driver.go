@@ -3,8 +3,14 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
+
+// ErrUnknownDatabase is in the cause chain of a connect error saying the
+// connection's database does not exist, so callers that only need the
+// server (schema databases) can retry on the driver's default database.
+var ErrUnknownDatabase = errors.New("database does not exist")
 
 // Driver identifies a database driver type.
 type Driver string
@@ -180,6 +186,21 @@ type StreamingQuerier interface {
 // Used by `schema dump --format sql`.
 type DDLDumper interface {
 	GetDDL(ctx context.Context, table string) (string, error)
+}
+
+// DatabaseInfo describes one database (schema, on MySQL) visible on a server.
+type DatabaseInfo struct {
+	Name      string `json:"name"`
+	Charset   string `json:"charset,omitempty"`
+	Collation string `json:"collation,omitempty"`
+	Owner     string `json:"owner,omitempty"`
+}
+
+// DatabaseLister is an optional interface for drivers that can enumerate the
+// databases on the connection's server. Used by `schema databases`. It ignores
+// the connection's own database, so it works on a connection without one.
+type DatabaseLister interface {
+	ListDatabases(ctx context.Context, includeSystem bool) ([]DatabaseInfo, error)
 }
 
 // SliceIterator wraps a pre-collected slice as a RowIterator (for non-streaming drivers).

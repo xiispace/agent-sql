@@ -14,7 +14,7 @@ import (
 // token comes from AGENT_SQL_SNOWFLAKE_TOKEN -- ad-hoc URLs cannot
 // embed the token because Snowflake URLs don't have a userinfo slot
 // in our grammar.
-func connectSnowflakeURL(connStr string) (driver.Connection, error) {
+func connectSnowflakeURL(connStr, database string) (driver.Connection, error) {
 	token := os.Getenv("AGENT_SQL_SNOWFLAKE_TOKEN")
 	if token == "" {
 		return nil, errors.New("Ad-hoc Snowflake connections require AGENT_SQL_SNOWFLAKE_TOKEN.", errors.FixableByHuman)
@@ -22,6 +22,9 @@ func connectSnowflakeURL(connStr string) (driver.Connection, error) {
 	parsed, err := snowflake.ParseURL(connStr)
 	if err != nil {
 		return nil, err
+	}
+	if database != "" {
+		parsed.Database = database
 	}
 	return snowflake.Connect(snowflake.Opts{
 		Account: parsed.Account, Database: parsed.Database, Schema: parsed.Schema,

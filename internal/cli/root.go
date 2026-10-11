@@ -6,6 +6,7 @@ import (
 
 	cliconfig "github.com/shhac/agent-sql/internal/cli/config"
 	"github.com/shhac/agent-sql/internal/cli/connection"
+	clicopy "github.com/shhac/agent-sql/internal/cli/copy"
 	clicredential "github.com/shhac/agent-sql/internal/cli/credential"
 	"github.com/shhac/agent-sql/internal/cli/query"
 	"github.com/shhac/agent-sql/internal/cli/schema"
@@ -25,6 +26,7 @@ type GlobalFlags struct {
 	libcli.Globals // Format, TimeoutMS, Debug
 
 	Connection string
+	Database   string
 	Expand     string
 	Full       bool
 	Compact    bool
@@ -34,6 +36,7 @@ type GlobalFlags struct {
 func (g *GlobalFlags) allGlobals() *shared.GlobalFlags {
 	return &shared.GlobalFlags{
 		Connection: g.Connection,
+		Database:   g.Database,
 		Format:     g.Format,
 		Expand:     g.Expand,
 		Full:       g.Full,
@@ -47,6 +50,7 @@ func (g *GlobalFlags) allGlobals() *shared.GlobalFlags {
 func (g *GlobalFlags) schemaGlobals() schema.SchemaGlobals {
 	return schema.SchemaGlobals{
 		Connection: g.Connection,
+		Database:   g.Database,
 		TimeoutMS:  g.TimeoutMS,
 		Format:     g.Format,
 		Compact:    g.Compact,
@@ -94,6 +98,9 @@ func newRootCmd(version string) *cobra.Command {
 	pf.Lookup("format").Usage = "Output format: jsonl, json, yaml (csv on query commands)"
 
 	pf.StringVarP(&g.Connection, "connection", "c", "", "Connection alias, file path, or URL")
+	// -D follows the mysql client (-d is already --debug). It picks a database,
+	// not a permission: the credential and the write gate are unchanged.
+	pf.StringVarP(&g.Database, "database", "D", "", "Database to use, overriding the connection's (not for sqlite/duckdb)")
 	pf.StringVarP(&g.Expand, "expand", "e", "", "Expand specific truncated fields (comma-separated)")
 	pf.BoolVarP(&g.Full, "full", "F", false, "Expand all truncated fields")
 	pf.BoolVarP(&g.Compact, "compact", "C", false, "Compact output (typed NDJSON: columns once, then row arrays)")
@@ -106,6 +113,7 @@ func newRootCmd(version string) *cobra.Command {
 	registerUsageCommand(root)
 	query.Register(root, g.allGlobals)
 	schema.Register(root, g.schemaGlobals)
+	clicopy.Register(root, g.allGlobals)
 	connection.Register(root, g.allGlobals)
 	clicredential.Register(root, g.allGlobals)
 	cliconfig.Register(root, g.allGlobals)
@@ -127,7 +135,7 @@ func newRootCmd(version string) *cobra.Command {
 	// surface is ~one-tool-per-group instead of one-per-leaf. Credential/config/
 	// usage commands are deliberately left out — they aren't agent tasks.
 	exposeGroups(root,
-		"query", "run", "schema")
+		"query", "run", "schema", "copy")
 
 	root.AddCommand(agentmcp.Command(root,
 		agentmcp.WithHiddenFlags("color", "expose"),

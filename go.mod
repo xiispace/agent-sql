@@ -10,6 +10,7 @@ require (
 	github.com/shhac/lib-agent-mcp v0.23.1
 	github.com/shhac/lib-agent-output v0.12.0
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.9
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.0
 )
@@ -39,7 +40,6 @@ require (
 	github.com/shhac/lib-agent-keyring v0.1.1 // indirect
 	github.com/shhac/lib-agent-oauth v0.7.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/zalando/go-keyring v0.2.8 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/image v0.20.0 // indirect

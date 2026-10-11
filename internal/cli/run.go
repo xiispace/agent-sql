@@ -26,6 +26,7 @@ func registerRunCommand(root *cobra.Command, g *GlobalFlags) {
 
 			drv, err := resolve.Resolve(ctx, resolve.Opts{
 				Connection: g.Connection,
+				Database:   g.Database,
 				Write:      write,
 				Timeout:    g.TimeoutMS,
 			})

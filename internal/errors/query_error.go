@@ -28,6 +28,22 @@ func As(err error, target **QueryError) bool {
 	return out.As(err, target)
 }
 
+// Prefix returns err with prefix prepended to its message ("--to: ...",
+// "target: ...", "table orders: ..."), keeping a QueryError's fixable_by and
+// hint. Unclassified errors are wrapped as fixable_by agent.
+func Prefix(prefix string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var qe *QueryError
+	if As(err, &qe) {
+		cp := *qe
+		cp.Message = prefix + ": " + qe.Message
+		return &cp
+	}
+	return Wrap(fmt.Errorf("%s: %w", prefix, err), FixableByAgent)
+}
+
 // ConnTip is the shared "ad-hoc connections" hint appended to connection
 // lookup failures. It's defined once so the unknown-connection and
 // no-connection-specified messages stay in sync across this package and the

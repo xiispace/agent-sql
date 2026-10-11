@@ -18,10 +18,13 @@ func NormalizeValue(v any) any {
 func QuoteIdentDot(name string) string {
 	parts := strings.Split(name, ".")
 	for i, p := range parts {
-		parts[i] = `"` + strings.ReplaceAll(p, `"`, `""`) + `"`
+		parts[i] = QuoteIdentANSI(p)
 	}
 	return strings.Join(parts, ".")
 }
+
+// QuoteIdentANSI double-quotes one identifier (no dot-splitting).
+func QuoteIdentANSI(name string) string { return `"` + strings.ReplaceAll(name, `"`, `""`) + `"` }
 
 // SplitSchemaTable splits a potentially schema-qualified name into (schema, table).
 // If the name contains no dot, defaultSchema is used.

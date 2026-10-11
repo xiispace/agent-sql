@@ -2,10 +2,11 @@
 name: agent-sql
 description: |
   Read-only-by-default SQL CLI supporting PostgreSQL, CockroachDB, MySQL,
-  MariaDB, SQLite, DuckDB, Snowflake, and MSSQL. Use when exploring schemas,
-  tables, columns, indexes, and constraints, running SELECTs, explain plans,
-  samples, or counts, querying parquet through DuckDB, managing connections,
-  or writing data when explicitly permitted with --write.
+  MariaDB, SQLite, DuckDB, Snowflake, and MSSQL. Use when exploring databases,
+  schemas, tables, columns, indexes, and constraints, running SELECTs, explain
+  plans, samples, or counts, querying parquet through DuckDB, diffing a schema
+  between two connections, copying structure or rows from one connection to
+  another, or writing data when explicitly permitted.
 allowed-tools: Bash(agent-sql *) Read Grep Glob
 ---
 
@@ -51,11 +52,15 @@ agent-sql connection test                # verify default connection works
 ## Exploring a database
 
 ```bash
+agent-sql schema databases                           # databases this credential can see on the server
+agent-sql schema databases --pattern 'shop_*'        # case-insensitive glob filter
+agent-sql schema tables -D shop                       # -D/--database: another database on the same server
 agent-sql schema tables                              # list all tables
 agent-sql schema tables --include-system              # include system tables (PG)
 agent-sql schema describe users                       # columns, types, nullability, defaults
 agent-sql schema describe users --detailed             # add constraints, indexes, comments
 agent-sql schema describe analytics.events            # PG namespace dot notation
+agent-sql schema describe shop.orders                 # MySQL/MariaDB database dot notation
 agent-sql schema indexes                              # all indexes across all tables (not available for Snowflake)
 agent-sql schema indexes users                        # indexes for a specific table
 agent-sql schema constraints users                    # PKs, FKs, unique, check constraints
@@ -66,6 +71,18 @@ agent-sql schema dump --tables users,orders           # dump specific tables onl
 agent-sql query sample users                          # 5 sample rows (default)
 agent-sql query sample users --limit 10 --where "status = 'active'"
 ```
+
+`-D <db>` works on every command (`run`, `query`, `schema`; on `schema diff`/`copy` it applies to both `--from` and `--to`) for every server driver; sqlite/duckdb reject it. A MySQL/MariaDB connection stored without a database has no default database: whole-database `schema` commands then fail with a hint to pass `-D` (run `schema databases` to see the candidates).
+
+## Comparing a schema between connections
+
+```bash
+agent-sql schema diff --from stage --to dev --schema shop                 # NDJSON record per differing object + receipt
+agent-sql schema diff --from stage --to dev --schema shop --format sql    # DDL that brings dev in line (destructive lines commented out)
+agent-sql schema diff --from stage --to dev --schema shop --objects tables,views,routines,triggers,events --ignore-definer
+```
+
+Read-only on both sides (mysql, mariadb, pg; on PostgreSQL `--schema` is a namespace in the connection's database). `--from`/`--to` are required and never fall back to `-c` or the default. Records carry `status` (`only_in_source`/`only_in_target`/`different`), `destructive`, `action`, and `changes` (`from` = target's value, `to` = source's). Column renames show as a drop + add with a rename `hint`.
 
 ## Querying data
 
@@ -90,6 +107,19 @@ agent-sql run "UPDATE users SET active = true WHERE id = 1" --write
 ```
 
 If writes are blocked, the error will have `"fixable_by": "human"` -- do not retry, escalate to the user.
+
+### Copying between connections
+
+`copy` moves structure and/or rows from `--from` to `--to` inside agent-sql, so credentials never leave the process (do not try to extract them for mysqldump). `--to` goes through the same gate as `--write` (stored connection, credential with write permission); no `--write` flag is needed. `--structure` and `--data` are both required -- state intent:
+
+```bash
+agent-sql copy --from stage --to dev --schema shop --structure sync --data none --dry-run   # preview first
+agent-sql copy --from stage --to dev --schema shop --structure sync --data none             # bring dev's structure in line, keep its rows
+agent-sql copy --from stage --to dev --schema shop --structure sync --data sync --no-delete # also merge stage's rows by key
+agent-sql copy --from stage --to dev --schema shop --structure none --data upsert --tables orders --where "orders=created_at >= '2026-09-01'"
+```
+
+Structure: `recreate` (drop + create), `sync` (apply `schema diff`), `none`. Data: `replace` (truncate + insert), `append`, `upsert` (by key), `sync` (insert/update/delete by key), `none`. Anything that can lose target data (`replace`, `sync` without `--no-delete`, `recreate` over existing tables, drops, narrowing types) is refused with the full list unless `--allow-destructive` -- show the user the `--dry-run` output and get their go-ahead before adding it. `upsert`/`sync` need a primary key or unique NOT NULL index; tables without one are listed in the error. A row colliding with another on a secondary unique index fails the table rather than overwriting. `--dry-run` needs no write permission. Output: one NDJSON record per table, then a receipt (`failures` with `--continue-on-error`). Run `agent-sql copy usage` for every option.
 
 ## Truncation
 
@@ -161,7 +191,7 @@ The agent may set `--username` and `--write` on the user's behalf, but secret va
 
 ## Safety
 
-- **Read-only by default**: writes require `--write` flag AND a credential with write permission
+- **Read-only by default**: writes require `--write` flag AND a credential with write permission; `copy` writes only to `--to` through the same credential gate, reads `--from` inside a read-only snapshot, and gates data loss behind `--allow-destructive`
 - **Defense in depth**: PG/CockroachDB uses read-only transactions + keyword guard; MySQL/MariaDB uses `START TRANSACTION READ ONLY` + single-statement enforcement; SQLite uses OS-level `SQLITE_OPEN_READONLY`; DuckDB uses `-readonly` CLI flag; Snowflake uses keyword allowlist + `MULTI_STATEMENT_COUNT=1`; MSSQL uses keyword-based guard (server-side `db_datareader` role recommended)
 - **Result cap**: `query.maxRows` (default 10,000)
 - **Timeout**: `query.timeout` (default 30s), override per-command with `--timeout <ms>`
@@ -182,6 +212,7 @@ agent-sql usage                    # top-level overview
 agent-sql connection usage         # connection commands
 agent-sql schema usage             # schema exploration commands
 agent-sql query usage              # query commands
+agent-sql copy usage               # copy modes, gates, and options
 agent-sql config usage             # settings keys, defaults, validation
 ```
 
