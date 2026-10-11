@@ -1,0 +1,144 @@
+# Release for forks: the same flow as shhac/homebrew-tap's go-release.yml
+# (cross-build, GitHub Release, regenerate + push the Homebrew formula), but
+# publishing to <owner>/homebrew-tap. Upstream releases through release.yml.
+# To release:  git tag vX.Y.Z && git push origin vX.Y.Z
+# Install:     brew install <owner>/tap/agent-sql
+#
+# TAP_DEPLOY_KEY (a write deploy key on <owner>/homebrew-tap) lives in the
+# `homebrew-tap` environment, which only v* tags may deploy to.
+name: Release (fork)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  NAME: agent-sql
+
+jobs:
+  release:
+    if: github.repository_owner != 'shhac'
+    name: Build, release, and bump formula
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment: homebrew-tap
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./... -count=1 -short
+
+      - name: Cross-build + package
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          build() { # os arch ext
+            CGO_ENABLED=0 GOOS="$1" GOARCH="$2" \
+              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "${NAME}${3:-}" "./cmd/${NAME}"
+          }
+          for pair in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${pair%/*}"; arch="${pair#*/}"
+            build "$os" "$arch"
+            tar -czf "dist/${NAME}-${os}-${arch}.tar.gz" "${NAME}"
+            rm -f "${NAME}"
+          done
+          build windows amd64 .exe
+          zip -qj "dist/${NAME}-windows-amd64.zip" "${NAME}.exe"
+          rm -f "${NAME}.exe"
+          ( cd dist && sha256sum ./*.tar.gz ./*.zip > checksums-sha256.txt )
+          ls -lh dist
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
+
+      - name: Generate + push Homebrew formula
+        env:
+          OWNER: ${{ github.repository_owner }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_DEPLOY_KEY}" ]; then
+            echo "::notice::TAP_DEPLOY_KEY not set — skipping tap update."
+            exit 0
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          sha() { sha256sum "dist/${NAME}-$1.tar.gz" | cut -d' ' -f1; }
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
+          cat > "${NAME}.rb" <<EOF
+          class AgentSql < Formula
+            desc "Read-only SQL CLI for AI agents"
+            homepage "https://github.com/${GITHUB_REPOSITORY}"
+            license "LicenseRef-PolyForm-Perimeter-1.0.0"
+
+            on_macos do
+              on_arm do
+                url "${base}/${NAME}-darwin-arm64.tar.gz"
+                sha256 "$(sha darwin-arm64)"
+              end
+              on_intel do
+                url "${base}/${NAME}-darwin-amd64.tar.gz"
+                sha256 "$(sha darwin-amd64)"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${base}/${NAME}-linux-arm64.tar.gz"
+                sha256 "$(sha linux-arm64)"
+              end
+              on_intel do
+                url "${base}/${NAME}-linux-amd64.tar.gz"
+                sha256 "$(sha linux-amd64)"
+              end
+            end
+
+            def install
+              bin.install "${NAME}"
+              # Installs shell completions via \`${NAME} completion bash|zsh|fish\`.
+              generate_completions_from_executable(bin/"${NAME}", "completion")
+            end
+
+            test do
+              assert_match "${VERSION}", shell_output("#{bin}/${NAME} --version")
+              assert_match "Read-only-by-default SQL CLI", shell_output("#{bin}/${NAME} --help")
+              assert_match "#compdef ${NAME}", shell_output("#{bin}/${NAME} completion zsh")
+            end
+          end
+          EOF
+          echo "----- generated Formula/${NAME}.rb -----"; cat "${NAME}.rb"
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "${TAP_DEPLOY_KEY}" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+          git clone "git@github.com:${OWNER}/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp "${NAME}.rb" "tap/Formula/${NAME}.rb"
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "Formula/${NAME}.rb"
+          if git diff --cached --quiet; then echo "Formula already up to date."; exit 0; fi
+          git commit -m "${NAME} ${VERSION}"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD; then exit 0; fi
+            sleep "$(( (RANDOM % 6) + 1 ))"
+            git pull --rebase origin HEAD
+          done
+          echo "::error::failed to push tap update" >&2
+          exit 1

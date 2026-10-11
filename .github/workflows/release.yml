@@ -10,6 +10,8 @@ on:
 
 jobs:
   release:
+    # Forks release through release-fork.yml (their own tap).
+    if: github.repository_owner == 'shhac'
     uses: shhac/homebrew-tap/.github/workflows/go-release.yml@main
     permissions:
       contents: write

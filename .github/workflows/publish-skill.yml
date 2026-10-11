@@ -6,6 +6,7 @@ on:
 
 jobs:
   publish-skill:
+    if: github.repository_owner == 'shhac'
     uses: shhac/agent-skills/.github/workflows/sync-skill.yml@main
     with:
       skill_name: agent-sql
