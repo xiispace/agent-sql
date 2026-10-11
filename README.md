@@ -13,12 +13,12 @@ Read-only-by-default SQL CLI for AI agents.
 ## Installation
 
 ```bash
-brew install shhac/tap/agent-sql
+brew install xiispace/tap/agent-sql
 ```
 
 ### Other options
 
-Download a binary from [GitHub releases](https://github.com/shhac/agent-sql/releases), or install via `go install`:
+Download a binary from [GitHub releases](https://github.com/xiispace/agent-sql/releases), or install via `go install`:
 
 ```bash
 go install github.com/shhac/agent-sql/cmd/agent-sql@latest
