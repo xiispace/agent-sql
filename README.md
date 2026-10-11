@@ -2,6 +2,14 @@
 
 Read-only-by-default SQL CLI for AI agents.
 
+> **This is a fork of [shhac/agent-sql](https://github.com/shhac/agent-sql).** It tracks upstream and adds:
+>
+> - **Database addressing** -- global `-D/--database` points any command at another database on the same server, and `schema databases` lists the databases the credential can see.
+> - **`schema diff`** -- compares a schema between two connections or databases (read-only on both sides) and flags destructive changes.
+> - **`copy`** -- syncs structure and/or rows from one connection to another: DDL in dependency order, then data in `replace`, `append`, `upsert` or `sync` mode, with `--dry-run` and an `--allow-destructive` gate. It writes only through a stored connection whose credential has write permission.
+>
+> These features cover MySQL, MariaDB and PostgreSQL. Releases are published to this fork's [releases](https://github.com/xiispace/agent-sql/releases) and the `xiispace/tap` Homebrew tap.
+
 - **Structured output** -- JSONL to stdout by default, errors to stderr as JSON
 - **LLM-optimized** -- `agent-sql usage` prints concise docs for agent consumption
 - **Read-only by default** -- write access requires explicit opt-in per credential and per query
